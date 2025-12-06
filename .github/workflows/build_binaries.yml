@@ -33,7 +33,7 @@ jobs:
         shell: bash
       - name: Build standalone binary with PyInstaller
         run: |
-          pyinstaller --onefile --name "$APP_NAME" "$PY_FILE"
+          pyinstaller --onefile --name --icon "NONE" "$APP_NAME" "$PY_FILE"
         shell: bash
       - name: Show dist contents
         run: ls -R dist
