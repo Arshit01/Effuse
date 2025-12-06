@@ -1,0 +1,45 @@
+name: Build Effuse Binaries
+'on':
+  workflow_dispatch: null
+jobs:
+  build:
+    name: Build on ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - ubuntu-latest
+          - windows-latest
+          - macos-latest
+    env:
+      APP_NAME: effuse
+      PY_FILE: effuse.py
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+      - name: Install dependencies (via python -m pip)
+        run: >
+          python -m pip install --upgrade pip
+
+          if [ -f requirements.txt ]; then python -m pip install -r
+          requirements.txt; fi
+
+          python -m pip install pyinstaller
+        shell: bash
+      - name: Build standalone binary with PyInstaller
+        run: |
+          pyinstaller --onefile --name "$APP_NAME" "$PY_FILE"
+        shell: bash
+      - name: Show dist contents
+        run: ls -R dist
+        shell: bash
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: effuse-${{ runner.os }}
+          path: dist/*
