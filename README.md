@@ -2,7 +2,7 @@
 
 Effuse is a robust command-line utility designed for secure file encryption and decryption, leveraging the industry-standard AES-256 algorithm. It offers a flexible and highly secure method to protect your sensitive data, allowing you to choose between a strong password or a PEM key for cryptographic operations. With features like per-file salting, PBKDF2 key derivation, and secure deletion of original files, Effuse ensures that your information remains confidential and protected against unauthorized access.
 
-## Features
+## ✨ Features
 
 - **AES-256 Encryption**: Strong encryption to keep your files secure.
 - **Password or PEM Key**: Choose between a password or a PEM key for encryption.
@@ -12,73 +12,80 @@ Effuse is a robust command-line utility designed for secure file encryption and 
 - **Key Generation**: Generate a PEM key from a source file for added entropy.
 - **Secure Deletion**: The original file is securely removed after encryption/decryption.
 
-## Installation
+## 📦 Installation
+
+### Download Binary (Recommended)
+
+You can download the pre-compiled binaries for your OS based on architecture from the [Release](https://github.com/Arshit01/Effuse/releases/latest) page.
+
+- Unzip the downloaded file.
+- Move the binary to a directory in your system `PATH`.
+
+### Build from Source
+
+#### Prerequisites
+
+- **Go**: Ensure you have Go installed on your machine. You can download and install it from [go.dev/doc/install](https://go.dev/doc/install).
+
+#### Steps:
 
 1.  Clone the repository:
     ```bash
-    git clone https://github.com/your-username/effuse.git
-    cd effuse
+    git clone https://github.com/Arshit01/Effuse.git
+    cd Effuse
     ```
-2.  Install the required dependencies:
+2.  Build the binary using the provided script (handles dependencies automatically):
     ```bash
-    pip install -r requirements.txt
+    ./build.sh
     ```
-    The `requirements.txt` file contains:
-    ```
-    cryptography
-    pycryptodome
-    ```
+    This will create binaries in the `dist` directory, organized by architecture and OS (e.g., `dist/amd64/linux/effuse`).
 
-## Usage
+## 🎯 Usage
 
-### Encrypt a File
-
-To encrypt a file with a password:
+Effuse uses a subcommand-based approach.
 
 ```bash
-python effuse.py -e <file-to-encrypt>
+effuse [command] [flags] [files...]
 ```
 
-To encrypt a file with a PEM key:
+### 🔒 Encrypt a File
 
-```bash
-python effuse.py -e <file-to-encrypt> --key <path-to-pem-key>
-```
+- **With Password**
+  ```bash
+  ./effuse encrypt <file-to-encrypt>
+  ```
+- **With PEM Key**
+  ```bash
+  ./effuse encrypt <file-to-encrypt> --key <path-to-pem-key>
+  ```
 
-### Decrypt a File
+### 🔓 Decrypt a File
 
-To decrypt a file with a password:
+- **With Password**
+  ```bash
+  ./effuse decrypt <file-to-decrypt.eff>
+  ```
+- **With PEM Key**
+  ```bash
+  ./effuse decrypt <file-to-decrypt.eff> --key <path-to-pem-key>
+  ```
 
-```bash
-python effuse.py -d <file-to-decrypt.eff>
-```
+### 🗝️ Generate a PEM Key
 
-To decrypt a file with a PEM key:
+- **From Source File**
+  ```bash
+  ./effuse genkey <source-file>
+  ```
+  > The source file acts as entropy. This creates `key.pem` in the current directory.
 
-```bash
-python effuse.py -d <file-to-decrypt.eff> --key <path-to-pem-key>
-```
+### 📊 Get File Info
 
-### Generate a PEM Key
+- **View Metadata**
+  ```bash
+  ./effuse info <file.eff>
+  ```
 
-To generate a new PEM key from a source file (for entropy):
-
-```bash
-python effuse.py --genkey <source-file>
-```
-> The source file can be any file (e.g., image, video, PDF) and its content is used as entropy for key generation.
-
-This will create a `key.pem` file in the current directory.
-
-### Get File Info
-
-To get information about an encrypted file (original file type):
-
-```bash
-python effuse.py -i <file.eff>
-```
-
-## File Header Format
+## 🏗️ File Header Format
 
 The encrypted file has a custom header to store encryption metadata.
 
@@ -90,15 +97,15 @@ The encrypted file has a custom header to store encryption metadata.
 - **IV (16 bytes)**
 - **CIPHERTEXT (rest)**
 
-## Key Derivation
+## 🔐 Key Derivation
 
 The encryption key is derived from a password using PBKDF2-HMAC-SHA256. A random salt and a random number of iterations are used for each encryption.
 
-## PEM Key Generation
+## 🔑 PEM Key Generation
 
-A PEM key can be generated using the `--genkey` option. This uses a source file as entropy to generate a 4096-bit RSA key. The key is saved to `key.pem` in the current directory.
+A PEM key can be generated using the `genkey` command. This uses a source file as entropy to generate a 4096-bit RSA key. The key is saved to `key.pem` in the current directory.
 
-## License
+## 📝 License
 
 This project is licensed under the **AGPL-3.0-only** license.
 
