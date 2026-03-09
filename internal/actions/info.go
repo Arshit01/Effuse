@@ -1,4 +1,4 @@
-// Effuse - AES-256 File Encryption Utility (v1)
+// Effuse - AES-256-GCM File Encryption Utility (v2)
 // Copyright (C) 2025 Arshit Vora
 //
 // This program is free software: you can redistribute it and/or modify
@@ -31,18 +31,18 @@ import (
 func ShowInfo(path string, passwordOrKey []byte, usePEM bool) error {
 	f, err := os.Open(path)
 	if err != nil {
-		return err
+		return fmt.Errorf("failed to open file: %w", err)
 	}
 	defer f.Close()
 
-	header, err := magic.ReadHeader(f)
+	header, headerBytes, err := magic.ReadHeader(f)
 	if err != nil {
-		return err
+		return fmt.Errorf("failed to read header: %w", err)
 	}
 
 	ciphertext, err := io.ReadAll(f)
 	if err != nil {
-		return err
+		return fmt.Errorf("failed to read ciphertext: %w", err)
 	}
 
 	spinner, _ := pterm.DefaultSpinner.Start(fmt.Sprintf("Reading info for %s...", filepath.Base(path)))
@@ -54,21 +54,33 @@ func ShowInfo(path string, passwordOrKey []byte, usePEM bool) error {
 		key = security.DeriveKey(string(passwordOrKey), header.Salt, int(header.Iterations))
 	}
 
-	plaintext, err := security.Decrypt(ciphertext, key, header.IV)
+	// Decrypt and verify integrity using GCM with header as AAD.
+	// GCM authentication covers both the ciphertext and the entire header (via AAD),
+	// so tampering ANY header field (salt, nonce, iterations, etc.) will be caught here.
+	plaintext, err := security.Decrypt(ciphertext, key, header.Nonce, headerBytes)
 	if err != nil {
-		spinner.Fail("Decryption failed")
-		return fmt.Errorf("decryption failed: %w", err)
+		// GCM failed — use HMAC key check to determine cause:
+		// If HMAC passes → key is correct, but header or ciphertext was tampered
+		// If HMAC fails → key is wrong (wrong password, or salt/iterations were tampered)
+		if security.VerifyKeyCheck(key, header.KeyCheck) {
+			spinner.Fail("File has been tampered with")
+			return &DisplayedError{security.ErrTampered}
+		}
+		spinner.Fail("Incorrect password or key")
+		return &DisplayedError{security.ErrIncorrectKey}
 	}
 	
 	spinner.Success("Info retrieved")
 
 	if len(plaintext) < 1 {
-		return fmt.Errorf("payload too small")
+		spinner.Fail("Failed to read file info")
+		return &DisplayedError{fmt.Errorf("payload too small")}
 	}
 
 	extLen := int(plaintext[0])
 	if len(plaintext) < 1+extLen {
-		return fmt.Errorf("malformed payload")
+		spinner.Fail("Failed to read file info")
+		return &DisplayedError{fmt.Errorf("malformed payload")}
 	}
 	ext := string(plaintext[1 : 1+extLen])
 

@@ -1,4 +1,4 @@
-// Effuse - AES-256 File Encryption Utility (v1)
+// Effuse - AES-256-GCM File Encryption Utility (v2)
 // Copyright (C) 2025 Arshit Vora
 //
 // This program is free software: you can redistribute it and/or modify
@@ -32,12 +32,12 @@ import (
 func DecryptFile(path string, passwordOrKey []byte, usePEM bool) error {
 	f, err := os.Open(path)
 	if err != nil {
-		return err
+		return fmt.Errorf("failed to open file: %w", err)
 	}
 	defer f.Close()
 
-	// Read Header
-	header, err := magic.ReadHeader(f)
+	// Read Header (also returns raw bytes for AAD)
+	header, headerBytes, err := magic.ReadHeader(f)
 	if err != nil {
 		return fmt.Errorf("failed to read header: %w", err)
 	}
@@ -45,7 +45,7 @@ func DecryptFile(path string, passwordOrKey []byte, usePEM bool) error {
 	// Read remaining ciphertext
 	ciphertext, err := io.ReadAll(f)
 	if err != nil {
-		return err
+		return fmt.Errorf("failed to read ciphertext: %w", err)
 	}
 
 	spinner, _ := pterm.DefaultSpinner.Start(fmt.Sprintf("Decrypting %s...", filepath.Base(path)))
@@ -58,21 +58,32 @@ func DecryptFile(path string, passwordOrKey []byte, usePEM bool) error {
 		key = security.DeriveKey(string(passwordOrKey), header.Salt, int(header.Iterations))
 	}
 
-	// Decrypt
-	plaintext, err := security.Decrypt(ciphertext, key, header.IV)
+	// Decrypt and verify integrity using GCM with header as AAD.
+	// GCM authentication covers both the ciphertext and the entire header (via AAD),
+	// so tampering ANY header field (salt, nonce, iterations, etc.) will be caught here.
+	plaintext, err := security.Decrypt(ciphertext, key, header.Nonce, headerBytes)
 	if err != nil {
-		spinner.Fail("Decryption failed (wrong password?)")
-		return fmt.Errorf("decryption failed (wrong password?): %w", err)
+		// GCM failed — use HMAC key check to determine cause:
+		// If HMAC passes → key is correct, but header or ciphertext was tampered
+		// If HMAC fails → key is wrong (wrong password, or salt/iterations were tampered)
+		if security.VerifyKeyCheck(key, header.KeyCheck) {
+			spinner.Fail("File has been tampered")
+			return &DisplayedError{security.ErrTampered}
+		}
+		spinner.Fail("Incorrect password or key")
+		return &DisplayedError{security.ErrIncorrectKey}
 	}
 
 	if len(plaintext) < 1 {
-		return fmt.Errorf("decrypted payload too small")
+		spinner.Fail("Decryption failed")
+		return &DisplayedError{fmt.Errorf("Decrypted payload too small")}
 	}
 
 	// Parse Extension and Data
 	extLen := int(plaintext[0])
 	if len(plaintext) < 1+extLen {
-		return fmt.Errorf("malformed payload")
+		spinner.Fail("Decryption failed")
+		return &DisplayedError{fmt.Errorf("Malformed payload")}
 	}
 	ext := string(plaintext[1 : 1+extLen])
 	fileData := plaintext[1+extLen:]
@@ -83,7 +94,7 @@ func DecryptFile(path string, passwordOrKey []byte, usePEM bool) error {
 
 	if err := os.WriteFile(newPath, fileData, 0644); err != nil {
 		spinner.Fail("Failed to write decrypted file")
-		return fmt.Errorf("failed to write decrypted file: %w", err)
+		return &DisplayedError{err}
 	}
 
 	spinner.Success("File decrypted successfully")

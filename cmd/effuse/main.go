@@ -1,4 +1,4 @@
-// Effuse - AES-256 File Encryption Utility (v1)
+// Effuse - AES-256-GCM File Encryption Utility (v2)
 // Copyright (C) 2025 Arshit Vora
 //
 // This program is free software: you can redistribute it and/or modify

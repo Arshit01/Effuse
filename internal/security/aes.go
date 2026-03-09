@@ -1,4 +1,4 @@
-// Effuse - AES-256 File Encryption Utility (v1)
+// Effuse - AES-256-GCM File Encryption Utility (v2)
 // Copyright (C) 2025 Arshit Vora
 //
 // This program is free software: you can redistribute it and/or modify
@@ -17,79 +17,58 @@
 package security
 
 import (
-	"bytes"
 	"crypto/aes"
 	"crypto/cipher"
 	"errors"
+	"fmt"
 )
 
-// Perform AES-256-CBC encryption with PKCS#7 padding.
-func Encrypt(plaintext, key, iv []byte) ([]byte, error) {
+var (
+	ErrIncorrectKey = errors.New("incorrect password or key")
+	ErrTampered     = errors.New("file has been tampered with")
+)
+
+// Perform AES-256-GCM authenticated encryption with AAD.
+// The aad (Additional Authenticated Data) is authenticated but not encrypted,
+// ensuring the integrity of metadata like the file header.
+// Returns ciphertext with the GCM authentication tag appended.
+func Encrypt(plaintext, key, nonce, aad []byte) ([]byte, error) {
 	block, err := aes.NewCipher(key)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to create cipher: %w", err)
 	}
 
-	padded := pkcs7Pad(plaintext, aes.BlockSize)
-	ciphertext := make([]byte, len(padded))
+	gcm, err := cipher.NewGCM(block)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create GCM: %w", err)
+	}
 
-	mode := cipher.NewCBCEncrypter(block, iv)
-	mode.CryptBlocks(ciphertext, padded)
+	// Seal encrypts and authenticates plaintext with the given AAD,
+	// appending the 16-byte GCM authentication tag to the ciphertext
+	ciphertext := gcm.Seal(nil, nonce, plaintext, aad)
 
 	return ciphertext, nil
 }
 
-// Perform AES-256-CBC decryption with PKCS#7 unpadding.
-func Decrypt(ciphertext, key, iv []byte) ([]byte, error) {
+// Perform AES-256-GCM authenticated decryption with AAD.
+// Verifies the GCM authentication tag against both the ciphertext and AAD.
+// If the tag does not match, the file has been tampered with.
+func Decrypt(ciphertext, key, nonce, aad []byte) ([]byte, error) {
 	block, err := aes.NewCipher(key)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to create cipher: %w", err)
 	}
 
-	if len(ciphertext)%aes.BlockSize != 0 {
-		return nil, errors.New("Invalid Cipher data.")
-	}
-
-	mode := cipher.NewCBCDecrypter(block, iv)
-	plaintext := make([]byte, len(ciphertext))
-	mode.CryptBlocks(plaintext, ciphertext)
-
-	unpadded, err := pkcs7Unpad(plaintext, aes.BlockSize)
+	gcm, err := cipher.NewGCM(block)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to create GCM: %w", err)
 	}
 
-	return unpadded, nil
-}
-
-// appends padding to the data according to PKCS#7 standard.
-func pkcs7Pad(data []byte, blockSize int) []byte {
-	padding := blockSize - (len(data) % blockSize)
-	padText := bytes.Repeat([]byte{byte(padding)}, padding)
-	return append(data, padText...)
-}
-
-// removes PKCS#7 padding from the data.
-func pkcs7Unpad(data []byte, blockSize int) ([]byte, error) {
-	length := len(data)
-	if length == 0 {
-		return nil, errors.New("Data is empty")
-	}
-	if length%blockSize != 0 {
-		return nil, errors.New("Data is not block-aligned")
+	// Open authenticates and decrypts; returns error if ciphertext or AAD is tampered
+	plaintext, err := gcm.Open(nil, nonce, ciphertext, aad)
+	if err != nil {
+		return nil, ErrTampered
 	}
 
-	paddingLen := int(data[length-1])
-	if paddingLen == 0 || paddingLen > blockSize {
-		return nil, errors.New("Invalid padding")
-	}
-
-	// Verify if all padding bytes are correct
-	for i := 0; i < paddingLen; i++ {
-		if data[length-1-i] != byte(paddingLen) {
-			return nil, errors.New("Invalid padding bytes")
-		}
-	}
-
-	return data[:length-paddingLen], nil
+	return plaintext, nil
 }

@@ -1,4 +1,4 @@
-// Effuse - AES-256 File Encryption Utility (v1.5.0)
+// Effuse - AES-256-GCM File Encryption Utility (v2.0.0)
 // Copyright (C) 2025 Arshit Vora
 //
 // This program is free software: you can redistribute it and/or modify
@@ -17,6 +17,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"strings"
@@ -35,9 +36,9 @@ const (
 ██╔══╝  ██╔══╝  ██╔══╝  ██║   ██║╚════██║██╔══╝  
 ███████╗██║     ██║     ╚██████╔╝███████║███████╗
 ╚══════╝╚═╝     ╚═╝      ╚═════╝ ╚══════╝╚══════╝
-Effuse - AES-256 File Encryption Utility 
+Effuse - AES-256-GCM File Encryption Utility 
 `
-	version = "v1.5.0"
+	version = "v2.0.0"
 	author  = "Arshit Vora"
 	codename = "hac_king"
 )
@@ -48,7 +49,7 @@ var (
 	// Root Command
 	rootCmd = &cobra.Command{
 		Use:   "effuse",
-		Short: "Effuse - AES-256 File Encryption Utility",
+		Short: "Effuse - AES-256-GCM File Encryption Utility",
 		Long: pterm.DefaultCenter.WithCenterEachLineSeparately().Sprint(fmt.Sprintf("%s\n%s %s\n%s %s\n%s %s",
 			pterm.NewRGB(0, 125, 156).Sprint(banner),
 			pterm.LightYellow("Version:"), pterm.NewRGB(255, 23, 68).Sprint(version),
@@ -228,7 +229,11 @@ func processFiles(files []string, mode string) {
 		}
 
 		if err != nil {
-			pterm.Error.Printf("Failed: %s - %v\n", file, err)
+			// Only print errors not already displayed by the spinner
+			var displayed *actions.DisplayedError
+			if !errors.As(err, &displayed) {
+				pterm.Error.Printf("Failed: %s - %v\n", file, err)
+			}
 		}
 	}
 }

@@ -1,4 +1,4 @@
-// Effuse - AES-256 File Encryption Utility (v1)
+// Effuse - AES-256-GCM File Encryption Utility (v2)
 // Copyright (C) 2025 Arshit Vora
 //
 // This program is free software: you can redistribute it and/or modify
@@ -66,20 +66,17 @@ func EncryptFile(path string, passwordOrKey []byte, usePEM bool) error {
 		key = security.DeriveKey(string(passwordOrKey), salt, iterations)
 	}
 
-	// Initialization Vector
-	iv := make([]byte, magic.IVLen)
-	if _, err := rand.Read(iv); err != nil {
-		return err
+	// Nonce (12 bytes for GCM)
+	nonce := make([]byte, magic.NonceLen)
+	if _, err := rand.Read(nonce); err != nil {
+		spinner.Fail("Failed to generate nonce")
+		return &DisplayedError{err}
 	}
 
-	// Encrypt
-	ciphertext, err := security.Encrypt(payload, key, iv)
-	if err != nil {
-		spinner.Fail("Encryption failed")
-		return fmt.Errorf("encryption failed: %w", err)
-	}
+	// Generate key check (HMAC-SHA256) for key verification during decryption
+	keyCheck := security.GenerateKeyCheck(key)
 
-	// Write Output
+	// Write header and capture raw bytes for AAD
 	baseName := strings.TrimSuffix(path, filepath.Ext(path))
 	newPath := baseName + ".eff"
 
@@ -89,12 +86,22 @@ func EncryptFile(path string, passwordOrKey []byte, usePEM bool) error {
 	}
 	defer outFile.Close()
 
-	if err := magic.WriteHeader(outFile, uint32(iterations), salt, iv); err != nil {
-		return err
+	headerBytes, err := magic.WriteHeader(outFile, uint32(iterations), salt, nonce, keyCheck)
+	if err != nil {
+		spinner.Fail("Failed to write file header")
+		return &DisplayedError{err}
 	}
+
+	// Encrypt with header bytes as AAD
+	ciphertext, err := security.Encrypt(payload, key, nonce, headerBytes)
+	if err != nil {
+		spinner.Fail("Encryption failed")
+		return &DisplayedError{err}
+	}
+
 	if _, err := outFile.Write(ciphertext); err != nil {
 		spinner.Fail("Failed to write ciphertext")
-		return err
+		return &DisplayedError{err}
 	}
 	
 	spinner.Success("File encrypted successfully")

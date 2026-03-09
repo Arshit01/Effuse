@@ -1,10 +1,10 @@
-# Effuse - AES-256 File Encryption Utility
+# Effuse - AES-256-GCM File Encryption Utility
 
-Effuse is a robust command-line utility designed for secure file encryption and decryption, leveraging the industry-standard AES-256 algorithm. It offers a flexible and highly secure method to protect your sensitive data, allowing you to choose between a strong password or a PEM key for cryptographic operations. With features like per-file salting, PBKDF2 key derivation, and secure deletion of original files, Effuse ensures that your information remains confidential and protected against unauthorized access.
+Effuse is a robust command-line utility designed for secure file encryption and decryption, leveraging the industry-standard AES-256-GCM (Galois/Counter Mode) authenticated encryption algorithm. It offers a flexible and highly secure method to protect your sensitive data, allowing you to choose between a strong password or a PEM key for cryptographic operations. With features like per-file salting, PBKDF2 key derivation, built-in integrity verification, and secure deletion of original files, Effuse ensures that your information remains confidential, tamper-proof, and protected against unauthorized access.
 
 ## ✨ Features
 
-- **AES-256 Encryption**: Strong encryption to keep your files secure.
+- **AES-256-GCM Encryption**: Authenticated encryption providing both confidentiality and integrity.
 - **Password or PEM Key**: Choose between a password or a PEM key for encryption.
 - **Per-File Salt**: A random salt is generated for each file when using a password, enhancing security.
 - **PBKDF2**: Uses PBKDF2 to derive the encryption key from a password.

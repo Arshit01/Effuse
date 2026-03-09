@@ -1,4 +1,4 @@
-// Effuse - AES-256 File Encryption Utility (v1)
+// Effuse - AES-256-GCM File Encryption Utility (v2)
 // Copyright (C) 2025 Arshit Vora
 //
 // This program is free software: you can redistribute it and/or modify
@@ -17,6 +17,7 @@
 package magic
 
 import (
+	"bytes"
 	"encoding/binary"
 	"errors"
 	"io"
@@ -24,9 +25,10 @@ import (
 
 const (
 	MagicString = "EFFUSE"
-	VersionString = "v1"
+	VersionString = "v2"
 	DefaultSaltLen = 16
-	IVLen = 16
+	NonceLen = 12
+	KeyCheckLen = 32
 )
 
 var (
@@ -38,84 +40,94 @@ var (
 type Header struct {
 	Iterations uint32
 	Salt       []byte
-	IV         []byte
+	Nonce      []byte
+	KeyCheck   []byte
 }
 
-// Format: MAGIC(6 Byte) | VERSION(2 Byte) | ITER(4 Byte) | SALT_LEN(1 Byte) | SALT | IV(16 Byte)
-func WriteHeader(w io.Writer, iterations uint32, salt, iv []byte) error {
-	if _, err := w.Write([]byte(MagicString)); err != nil {
-		return err
-	}
+// Format: MAGIC(6 Byte) | VERSION(2 Byte) | ITER(4 Byte) | SALT_LEN(1 Byte) | SALT | NONCE(12 Byte) | KEY_CHECK(32 Byte)
+// Returns the raw header bytes (used as AAD for GCM).
+func WriteHeader(w io.Writer, iterations uint32, salt, nonce, keyCheck []byte) ([]byte, error) {
+	var buf bytes.Buffer
 
-	if _, err := w.Write([]byte(VersionString)); err != nil {
-		return err
-	}
-
-	if err := binary.Write(w, binary.BigEndian, iterations); err != nil {
-		return err
-	}
+	buf.Write([]byte(MagicString))
+	buf.Write([]byte(VersionString))
+	binary.Write(&buf, binary.BigEndian, iterations)
 
 	saltLen := len(salt)
 	if saltLen > 255 {
-		return errors.New("salt too long")
+		return nil, errors.New("salt too long")
 	}
-	if _, err := w.Write([]byte{uint8(saltLen)}); err != nil {
-		return err
+	buf.Write([]byte{uint8(saltLen)})
+	buf.Write(salt)
+
+	if len(nonce) != NonceLen {
+		return nil, errors.New("invalid nonce length")
+	}
+	buf.Write(nonce)
+
+	if len(keyCheck) != KeyCheckLen {
+		return nil, errors.New("invalid key check length")
+	}
+	buf.Write(keyCheck)
+
+	headerBytes := buf.Bytes()
+	if _, err := w.Write(headerBytes); err != nil {
+		return nil, err
 	}
 
-	if _, err := w.Write(salt); err != nil {
-		return err
-	}
-
-	if len(iv) != IVLen {
-		return errors.New("invalid IV length")
-	}
-	if _, err := w.Write(iv); err != nil {
-		return err
-	}
-
-	return nil
+	return headerBytes, nil
 }
 
-func ReadHeader(r io.Reader) (*Header, error) {
+// ReadHeader parses the file header and returns both the parsed struct
+// and the raw header bytes (used as AAD for GCM verification).
+func ReadHeader(r io.Reader) (*Header, []byte, error) {
+	var raw bytes.Buffer
+	tee := io.TeeReader(r, &raw)
+
 	magicBuf := make([]byte, len(MagicString))
-	if _, err := io.ReadFull(r, magicBuf); err != nil {
-		return nil, ErrShortRead
+	if _, err := io.ReadFull(tee, magicBuf); err != nil {
+		return nil, nil, ErrShortRead
 	}
 	if string(magicBuf) != MagicString {
-		return nil, ErrInvalidMagic
+		return nil, nil, ErrInvalidMagic
 	}
 
 	verBuf := make([]byte, len(VersionString))
-	if _, err := io.ReadFull(r, verBuf); err != nil {
-		return nil, ErrShortRead
+	if _, err := io.ReadFull(tee, verBuf); err != nil {
+		return nil, nil, ErrShortRead
 	}
 	if string(verBuf) != VersionString {
-		return nil, ErrInvalidVersion
+		return nil, nil, ErrInvalidVersion
 	}
 
 	var iterations uint32
-	if err := binary.Read(r, binary.BigEndian, &iterations); err != nil {
-		return nil, ErrShortRead
+	if err := binary.Read(tee, binary.BigEndian, &iterations); err != nil {
+		return nil, nil, ErrShortRead
 	}
 	saltLenBuf := make([]byte, 1)
-	if _, err := io.ReadFull(r, saltLenBuf); err != nil {
-		return nil, ErrShortRead
+	if _, err := io.ReadFull(tee, saltLenBuf); err != nil {
+		return nil, nil, ErrShortRead
 	}
 	saltLen := int(saltLenBuf[0])
 	salt := make([]byte, saltLen)
-	if _, err := io.ReadFull(r, salt); err != nil {
-		return nil, ErrShortRead
+	if _, err := io.ReadFull(tee, salt); err != nil {
+		return nil, nil, ErrShortRead
 	}
 
-	iv := make([]byte, IVLen)
-	if _, err := io.ReadFull(r, iv); err != nil {
-		return nil, ErrShortRead
+	nonce := make([]byte, NonceLen)
+	if _, err := io.ReadFull(tee, nonce); err != nil {
+		return nil, nil, ErrShortRead
+	}
+
+	keyCheck := make([]byte, KeyCheckLen)
+	if _, err := io.ReadFull(tee, keyCheck); err != nil {
+		return nil, nil, ErrShortRead
 	}
 
 	return &Header{
 		Iterations: iterations,
 		Salt:       salt,
-		IV:         iv,
-	}, nil
+		Nonce:      nonce,
+		KeyCheck:   keyCheck,
+	}, raw.Bytes(), nil
 }
