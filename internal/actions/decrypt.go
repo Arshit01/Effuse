@@ -17,35 +17,63 @@
 package actions
 
 import (
+	"encoding/binary"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
-	"strings"
 
 	"github.com/Arshit01/Effuse/internal/magic"
 	"github.com/Arshit01/Effuse/internal/security"
 	"github.com/pterm/pterm"
 )
 
+// parseMetadata extracts filename and extension from metadata bytes.
+// Format: [filename_len(2)][filename][ext_len(1)][extension]
+func parseMetadata(meta []byte) (filename, ext string, err error) {
+	if len(meta) < 3 {
+		return "", "", fmt.Errorf("metadata too short")
+	}
+
+	filenameLen := int(binary.BigEndian.Uint16(meta[0:2]))
+	if len(meta) < 2+filenameLen+1 {
+		return "", "", fmt.Errorf("malformed metadata: filename truncated")
+	}
+	filename = string(meta[2 : 2+filenameLen])
+
+	extLen := int(meta[2+filenameLen])
+	if len(meta) < 2+filenameLen+1+extLen {
+		return "", "", fmt.Errorf("malformed metadata: extension truncated")
+	}
+	ext = string(meta[2+filenameLen+1 : 2+filenameLen+1+extLen])
+
+	return filename, ext, nil
+}
+
 // Decrypt the .eff files.
 func DecryptFile(path string, passwordOrKey []byte, usePEM bool) error {
 	f, err := os.Open(path)
 	if err != nil {
-		return fmt.Errorf("failed to open file: %w", err)
+		pterm.Error.Printf("Failed to open file %s: %v\n", filepath.Base(path), err)
+		return &DisplayedError{err}
 	}
 	defer f.Close()
 
 	// Read Header (also returns raw bytes for AAD)
+	// ReadHeader verifies magic, version, and header hash.
+	// If any header field was tampered, it returns ErrTamperedHeader here
+	// — before any key derivation.
 	header, headerBytes, err := magic.ReadHeader(f)
 	if err != nil {
-		return fmt.Errorf("failed to read header: %w", err)
+		pterm.Error.Println(err.Error())
+		return &DisplayedError{err}
 	}
 
 	// Read remaining ciphertext
 	ciphertext, err := io.ReadAll(f)
 	if err != nil {
-		return fmt.Errorf("failed to read ciphertext: %w", err)
+		pterm.Error.Println("File has been tampered")
+		return &DisplayedError{err}
 	}
 
 	spinner, _ := pterm.DefaultSpinner.Start(fmt.Sprintf("Decrypting %s...", filepath.Base(path)))
@@ -60,12 +88,12 @@ func DecryptFile(path string, passwordOrKey []byte, usePEM bool) error {
 
 	// Decrypt and verify integrity using GCM with header as AAD.
 	// GCM authentication covers both the ciphertext and the entire header (via AAD),
-	// so tampering ANY header field (salt, nonce, iterations, etc.) will be caught here.
+	// so tampering the ciphertext or auth tag will be caught here.
 	plaintext, err := security.Decrypt(ciphertext, key, header.Nonce, headerBytes)
 	if err != nil {
 		// GCM failed — use HMAC key check to determine cause:
-		// If HMAC passes → key is correct, but header or ciphertext was tampered
-		// If HMAC fails → key is wrong (wrong password, or salt/iterations were tampered)
+		// If HMAC passes → key is correct, but ciphertext was tampered
+		// If HMAC fails → key is wrong
 		if security.VerifyKeyCheck(key, header.KeyCheck) {
 			spinner.Fail("File has been tampered")
 			return &DisplayedError{security.ErrTampered}
@@ -74,23 +102,27 @@ func DecryptFile(path string, passwordOrKey []byte, usePEM bool) error {
 		return &DisplayedError{security.ErrIncorrectKey}
 	}
 
-	if len(plaintext) < 1 {
+	// Split plaintext into metadata and file data using MetaLen from header
+	metaLen := int(header.MetaLen)
+	if len(plaintext) < metaLen {
 		spinner.Fail("Decryption failed")
-		return &DisplayedError{fmt.Errorf("Decrypted payload too small")}
+		return &DisplayedError{fmt.Errorf("decrypted payload too small for metadata")}
 	}
 
-	// Parse Extension and Data
-	extLen := int(plaintext[0])
-	if len(plaintext) < 1+extLen {
-		spinner.Fail("Decryption failed")
-		return &DisplayedError{fmt.Errorf("Malformed payload")}
-	}
-	ext := string(plaintext[1 : 1+extLen])
-	fileData := plaintext[1+extLen:]
+	metaBytes := plaintext[:metaLen]
+	fileData := plaintext[metaLen:]
 
-	// Write Output
-	baseName := strings.TrimSuffix(path, filepath.Ext(path))
-	newPath := baseName + ext
+	// Parse metadata to get original filename and extension
+	originalName, ext, err := parseMetadata(metaBytes)
+	if err != nil {
+		spinner.Fail("Decryption failed")
+		return &DisplayedError{fmt.Errorf("malformed metadata: %w", err)}
+	}
+
+	// Write output using the original filename in the same directory
+	dir := filepath.Dir(path)
+	_ = ext // extension is embedded in the original filename
+	newPath := filepath.Join(dir, originalName)
 
 	if err := os.WriteFile(newPath, fileData, 0644); err != nil {
 		spinner.Fail("Failed to write decrypted file")

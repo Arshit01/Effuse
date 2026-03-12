@@ -18,6 +18,7 @@ package actions
 
 import (
 	"crypto/rand"
+	"encoding/binary"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -28,26 +29,48 @@ import (
 	"github.com/pterm/pterm"
 )
 
-// Encrypts the file using the given password or key.
-func EncryptFile(path string, passwordOrKey []byte, usePEM bool) error {
-	// Read file
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return fmt.Errorf("failed to read file: %w", err)
+// buildMetadata creates the metadata bytes: [filename_len(2)][filename][ext_len(1)][extension]
+func buildMetadata(path string, data []byte) []byte {
+	// Original filename (basename without path)
+	filename := filepath.Base(path)
+	filenameBytes := []byte(filename)
+	if len(filenameBytes) > 65535 {
+		filenameBytes = filenameBytes[:65535]
 	}
 
-	// Detect file type
+	// Detect real file type via MIME
 	ext := magic.DetectFileType(data, path)
 	extBytes := []byte(ext)
 	if len(extBytes) > 255 {
 		extBytes = extBytes[:255]
 	}
 
-	// Construct Payload: [ext_len][ext][data]
-	payload := make([]byte, 1+len(extBytes)+len(data))
-	payload[0] = byte(len(extBytes))
-	copy(payload[1:], extBytes)
-	copy(payload[1+len(extBytes):], data)
+	// Build: [filename_len(2)][filename][ext_len(1)][extension]
+	meta := make([]byte, 2+len(filenameBytes)+1+len(extBytes))
+	binary.BigEndian.PutUint16(meta[0:2], uint16(len(filenameBytes)))
+	copy(meta[2:], filenameBytes)
+	meta[2+len(filenameBytes)] = byte(len(extBytes))
+	copy(meta[2+len(filenameBytes)+1:], extBytes)
+
+	return meta
+}
+
+// Encrypts the file using the given password or key.
+func EncryptFile(path string, passwordOrKey []byte, usePEM bool) error {
+	// Read file
+	data, err := os.ReadFile(path)
+	if err != nil {
+		pterm.Error.Printf("Failed to read file %s: %v\n", filepath.Base(path), err)
+		return &DisplayedError{err}
+	}
+
+	// Build metadata
+	meta := buildMetadata(path, data)
+
+	// Construct Payload: [metadata][filedata]
+	payload := make([]byte, len(meta)+len(data))
+	copy(payload, meta)
+	copy(payload[len(meta):], data)
 
 	// Generate salt
 	salt := security.GenerateRandomSalt()
@@ -82,11 +105,12 @@ func EncryptFile(path string, passwordOrKey []byte, usePEM bool) error {
 
 	outFile, err := os.Create(newPath)
 	if err != nil {
-		return fmt.Errorf("failed to create output file: %w", err)
+		pterm.Error.Printf("Failed to create output file %s: %v\n", newPath, err)
+		return &DisplayedError{err}
 	}
 	defer outFile.Close()
 
-	headerBytes, err := magic.WriteHeader(outFile, uint32(iterations), salt, nonce, keyCheck)
+	headerBytes, err := magic.WriteHeader(outFile, uint32(iterations), salt, nonce, keyCheck, uint32(len(meta)))
 	if err != nil {
 		spinner.Fail("Failed to write file header")
 		return &DisplayedError{err}

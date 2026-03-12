@@ -17,36 +17,56 @@
 package actions
 
 import (
-	"fmt"
 	"io"
 	"os"
 	"path/filepath"
 
 	"github.com/Arshit01/Effuse/internal/magic"
 	"github.com/Arshit01/Effuse/internal/security"
-	"github.com/pterm/pterm"
 )
 
-// Decrypts the file just enough (or fully) to reveal the original file type.
-func ShowInfo(path string, passwordOrKey []byte, usePEM bool) error {
+// FileInfo holds the result of inspecting an .eff file.
+type FileInfo struct {
+	File      string // .eff filename
+	FileName  string // original filename from metadata
+	Extension string // MIME-detected extension
+	Version   string // file format version
+	Status    string // "OK" or "CORRUPTED"
+}
+
+// GetFileInfo inspects an .eff file and returns its info.
+// Performs a full status check: magic → version → header hash → key → GCM → metadata.
+func GetFileInfo(path string, passwordOrKey []byte, usePEM bool) FileInfo {
+	info := FileInfo{
+		File:      filepath.Base(path),
+		FileName:  "NA",
+		Extension: "NA",
+		Version:   "NA",
+		Status:    "CORRUPTED",
+	}
+
 	f, err := os.Open(path)
 	if err != nil {
-		return fmt.Errorf("failed to open file: %w", err)
+		return info
 	}
 	defer f.Close()
 
+	// Read and verify header (magic, version, header hash)
 	header, headerBytes, err := magic.ReadHeader(f)
 	if err != nil {
-		return fmt.Errorf("failed to read header: %w", err)
+		return info
 	}
 
+	// If we got here, magic, version, and header hash are all valid
+	info.Version = magic.VersionString
+
+	// Read ciphertext
 	ciphertext, err := io.ReadAll(f)
 	if err != nil {
-		return fmt.Errorf("failed to read ciphertext: %w", err)
+		return info
 	}
 
-	spinner, _ := pterm.DefaultSpinner.Start(fmt.Sprintf("Reading info for %s...", filepath.Base(path)))
-
+	// Derive key
 	var key []byte
 	if usePEM {
 		key = passwordOrKey
@@ -54,36 +74,28 @@ func ShowInfo(path string, passwordOrKey []byte, usePEM bool) error {
 		key = security.DeriveKey(string(passwordOrKey), header.Salt, int(header.Iterations))
 	}
 
-	// Decrypt and verify integrity using GCM with header as AAD.
-	// GCM authentication covers both the ciphertext and the entire header (via AAD),
-	// so tampering ANY header field (salt, nonce, iterations, etc.) will be caught here.
+	// GCM decrypt
 	plaintext, err := security.Decrypt(ciphertext, key, header.Nonce, headerBytes)
 	if err != nil {
-		// GCM failed — use HMAC key check to determine cause:
-		// If HMAC passes → key is correct, but header or ciphertext was tampered
-		// If HMAC fails → key is wrong (wrong password, or salt/iterations were tampered)
-		if security.VerifyKeyCheck(key, header.KeyCheck) {
-			spinner.Fail("File has been tampered with")
-			return &DisplayedError{security.ErrTampered}
+		if !security.VerifyKeyCheck(key, header.KeyCheck) {
+			info.Status = "INCORRECT KEY/PASSWORD"
 		}
-		spinner.Fail("Incorrect password or key")
-		return &DisplayedError{security.ErrIncorrectKey}
-	}
-	
-	spinner.Success("Info retrieved")
-
-	if len(plaintext) < 1 {
-		spinner.Fail("Failed to read file info")
-		return &DisplayedError{fmt.Errorf("payload too small")}
+		return info
 	}
 
-	extLen := int(plaintext[0])
-	if len(plaintext) < 1+extLen {
-		spinner.Fail("Failed to read file info")
-		return &DisplayedError{fmt.Errorf("malformed payload")}
+	// Parse metadata
+	metaLen := int(header.MetaLen)
+	if len(plaintext) < metaLen {
+		return info
 	}
-	ext := string(plaintext[1 : 1+extLen])
 
-	pterm.Info.Printf("Original File Type: %s\n", pterm.Yellow(ext))
-	return nil
+	originalName, ext, err := parseMetadata(plaintext[:metaLen])
+	if err != nil {
+		return info
+	}
+
+	info.FileName = originalName
+	info.Extension = ext
+	info.Status = "OK"
+	return info
 }

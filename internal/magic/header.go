@@ -18,23 +18,26 @@ package magic
 
 import (
 	"bytes"
+	"crypto/sha256"
 	"encoding/binary"
 	"errors"
 	"io"
 )
 
 const (
-	MagicString = "EFFUSE"
-	VersionString = "v2"
+	MagicString    = "EFFUSE"
+	VersionString  = "v2"
 	DefaultSaltLen = 16
-	NonceLen = 12
-	KeyCheckLen = 32
+	NonceLen       = 12
+	KeyCheckLen    = 32
+	HeaderHashLen  = 32
 )
 
 var (
-	ErrInvalidMagic   = errors.New("missing header — file not recognized")
-	ErrInvalidVersion = errors.New("corrupted file header or unsupported version")
-	ErrShortRead      = errors.New("unexpected EOF while reading header")
+	ErrInvalidMagic   = errors.New("File not recognized")
+	ErrInvalidVersion = errors.New("Unsupported version")
+	ErrShortRead      = errors.New("File has been tampered")
+	ErrTamperedHeader = errors.New("File has been tampered")
 )
 
 type Header struct {
@@ -42,11 +45,12 @@ type Header struct {
 	Salt       []byte
 	Nonce      []byte
 	KeyCheck   []byte
+	MetaLen    uint32
 }
 
-// Format: MAGIC(6 Byte) | VERSION(2 Byte) | ITER(4 Byte) | SALT_LEN(1 Byte) | SALT | NONCE(12 Byte) | KEY_CHECK(32 Byte)
+// Format: MAGIC(6) | VERSION(2) | ITER(4) | SALT_LEN(1) | SALT(var) | NONCE(12) | KEY_CHECK(32) | META_LEN(4) | HEADER_HASH(32)
 // Returns the raw header bytes (used as AAD for GCM).
-func WriteHeader(w io.Writer, iterations uint32, salt, nonce, keyCheck []byte) ([]byte, error) {
+func WriteHeader(w io.Writer, iterations uint32, salt, nonce, keyCheck []byte, metaLen uint32) ([]byte, error) {
 	var buf bytes.Buffer
 
 	buf.Write([]byte(MagicString))
@@ -70,6 +74,12 @@ func WriteHeader(w io.Writer, iterations uint32, salt, nonce, keyCheck []byte) (
 	}
 	buf.Write(keyCheck)
 
+	binary.Write(&buf, binary.BigEndian, metaLen)
+
+	// Compute SHA256 hash of all preceding header bytes
+	hash := sha256.Sum256(buf.Bytes())
+	buf.Write(hash[:])
+
 	headerBytes := buf.Bytes()
 	if _, err := w.Write(headerBytes); err != nil {
 		return nil, err
@@ -80,10 +90,12 @@ func WriteHeader(w io.Writer, iterations uint32, salt, nonce, keyCheck []byte) (
 
 // ReadHeader parses the file header and returns both the parsed struct
 // and the raw header bytes (used as AAD for GCM verification).
+// Verifies magic, version, and header hash before returning.
 func ReadHeader(r io.Reader) (*Header, []byte, error) {
 	var raw bytes.Buffer
 	tee := io.TeeReader(r, &raw)
 
+	// Magic
 	magicBuf := make([]byte, len(MagicString))
 	if _, err := io.ReadFull(tee, magicBuf); err != nil {
 		return nil, nil, ErrShortRead
@@ -92,6 +104,7 @@ func ReadHeader(r io.Reader) (*Header, []byte, error) {
 		return nil, nil, ErrInvalidMagic
 	}
 
+	// Version
 	verBuf := make([]byte, len(VersionString))
 	if _, err := io.ReadFull(tee, verBuf); err != nil {
 		return nil, nil, ErrShortRead
@@ -100,10 +113,13 @@ func ReadHeader(r io.Reader) (*Header, []byte, error) {
 		return nil, nil, ErrInvalidVersion
 	}
 
+	// Iterations
 	var iterations uint32
 	if err := binary.Read(tee, binary.BigEndian, &iterations); err != nil {
 		return nil, nil, ErrShortRead
 	}
+
+	// Salt
 	saltLenBuf := make([]byte, 1)
 	if _, err := io.ReadFull(tee, saltLenBuf); err != nil {
 		return nil, nil, ErrShortRead
@@ -114,14 +130,38 @@ func ReadHeader(r io.Reader) (*Header, []byte, error) {
 		return nil, nil, ErrShortRead
 	}
 
+	// Nonce
 	nonce := make([]byte, NonceLen)
 	if _, err := io.ReadFull(tee, nonce); err != nil {
 		return nil, nil, ErrShortRead
 	}
 
+	// Key Check
 	keyCheck := make([]byte, KeyCheckLen)
 	if _, err := io.ReadFull(tee, keyCheck); err != nil {
 		return nil, nil, ErrShortRead
+	}
+
+	// Meta Length
+	var metaLen uint32
+	if err := binary.Read(tee, binary.BigEndian, &metaLen); err != nil {
+		return nil, nil, ErrShortRead
+	}
+
+	// Snapshot the bytes before the hash (everything read so far)
+	preHashBytes := make([]byte, raw.Len())
+	copy(preHashBytes, raw.Bytes())
+
+	// Header Hash
+	storedHash := make([]byte, HeaderHashLen)
+	if _, err := io.ReadFull(tee, storedHash); err != nil {
+		return nil, nil, ErrShortRead
+	}
+
+	// Verify header hash: SHA256 of all bytes before the hash must match
+	expectedHash := sha256.Sum256(preHashBytes)
+	if !bytes.Equal(expectedHash[:], storedHash) {
+		return nil, nil, ErrTamperedHeader
 	}
 
 	return &Header{
@@ -129,5 +169,6 @@ func ReadHeader(r io.Reader) (*Header, []byte, error) {
 		Salt:       salt,
 		Nonce:      nonce,
 		KeyCheck:   keyCheck,
+		MetaLen:    metaLen,
 	}, raw.Bytes(), nil
 }

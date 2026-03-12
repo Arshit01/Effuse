@@ -170,7 +170,7 @@ func processFiles(files []string, mode string) {
 		return
 	}
 
-	// Check for file existent first
+	// Check for file existence first
 	var existingFiles []string
 	for _, file := range files {
 		if _, err := os.Stat(file); err == nil {
@@ -217,6 +217,25 @@ func processFiles(files []string, mode string) {
 		usePEM = false
 	}
 
+	// Info mode: collect results and display table
+	if mode == "info" {
+		tableData := pterm.TableData{
+			{"File", "File Name", "Extension", "Version", "Status"},
+		}
+
+		for _, file := range existingFiles {
+			info := actions.GetFileInfo(file, passwordOrKey, usePEM)
+			tableData = append(tableData, []string{
+				info.File, info.FileName, info.Extension, info.Version, info.Status,
+			})
+		}
+
+		pterm.Println()
+		pterm.DefaultTable.WithHasHeader().WithBoxed().WithData(tableData).Render()
+		return
+	}
+
+	// Encrypt/Decrypt mode
 	for _, file := range existingFiles {
 		var err error
 		switch mode {
@@ -224,8 +243,6 @@ func processFiles(files []string, mode string) {
 			err = actions.EncryptFile(file, passwordOrKey, usePEM)
 		case "decrypt":
 			err = actions.DecryptFile(file, passwordOrKey, usePEM)
-		case "info":
-			err = actions.ShowInfo(file, passwordOrKey, usePEM)
 		}
 
 		if err != nil {
@@ -237,3 +254,4 @@ func processFiles(files []string, mode string) {
 		}
 	}
 }
+
