@@ -17,6 +17,7 @@
 package actions
 
 import (
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -27,21 +28,46 @@ import (
 
 // Inspecting an .eff file.
 type FileInfo struct {
-	File      string // .eff filename
-	FileName  string // original filename from metadata
-	Extension string // MIME-detected extension
-	Version   string // file format version
-	Status    string // "OK" or "CORRUPTED" or "INCORRECT KEY/PASSWORD"
+	File         string // .eff filename
+	FileName     string // original filename from metadata
+	Extension    string // MIME-detected extension
+	OriginalSize string // human-readable original file size
+	Version      string // file format version
+	Status       string // "OK" or "CORRUPTED" or "INCORRECT KEY/PASSWORD"
+}
+
+// Convert bytes to human-readable string.
+func formatSize(bytes uint64) string {
+	const (
+		KB = 1024
+		MB = KB * 1024
+		GB = MB * 1024
+		TB = GB * 1024
+	)
+
+	switch {
+	case bytes >= TB:
+		return fmt.Sprintf("%.2f TB", float64(bytes)/float64(TB))
+	case bytes >= GB:
+		return fmt.Sprintf("%.2f GB", float64(bytes)/float64(GB))
+	case bytes >= MB:
+		return fmt.Sprintf("%.2f MB", float64(bytes)/float64(MB))
+	case bytes >= KB:
+		return fmt.Sprintf("%.2f KB", float64(bytes)/float64(KB))
+	default:
+		return fmt.Sprintf("%d B", bytes)
+	}
 }
 
 // Full status check
 func GetFileInfo(path string, passwordOrKey []byte, usePEM bool) FileInfo {
 	info := FileInfo{
-		File:      filepath.Base(path),
-		FileName:  "NA",
-		Extension: "NA",
-		Version:   "NA",
-		Status:    "CORRUPTED",
+		File:         filepath.Base(path),
+		FileName:     "NA",
+		Extension:    "NA",
+		OriginalSize: "NA",
+		Version:      "NA",
+		Status:       "CORRUPTED",
 	}
 
 	f, err := os.Open(path)
@@ -56,12 +82,7 @@ func GetFileInfo(path string, passwordOrKey []byte, usePEM bool) FileInfo {
 		return info
 	}
 	info.Version = magic.VersionString
-
-	// Read ciphertext
-	ciphertext, err := io.ReadAll(f)
-	if err != nil {
-		return info
-	}
+	info.OriginalSize = formatSize(header.OriginalSize)
 
 	// Derive key
 	var key []byte
@@ -71,28 +92,59 @@ func GetFileInfo(path string, passwordOrKey []byte, usePEM bool) FileInfo {
 		key = security.DeriveKey(string(passwordOrKey), header.Salt, int(header.Iterations))
 	}
 
-	// GCM decrypt
-	plaintext, err := security.Decrypt(ciphertext, key, header.Nonce, headerBytes)
-	if err != nil {
-		if !security.VerifyKeyCheck(key, header.KeyCheck) {
-			info.Status = "INCORRECT KEY/PASSWORD"
+	if header.ChunkSize == 0 {
+		// Read all ciphertext and decrypt
+		ciphertext, err := io.ReadAll(f)
+		if err != nil {
+			return info
 		}
-		return info
+
+		plaintext, err := security.Decrypt(ciphertext, key, header.Nonce, headerBytes)
+		if err != nil {
+			if !security.VerifyKeyCheck(key, header.KeyCheck) {
+				info.Status = "INCORRECT KEY/PASSWORD"
+			}
+			return info
+		}
+
+		metaLen := int(header.MetaLen)
+		if len(plaintext) < metaLen {
+			return info
+		}
+
+		originalName, ext, err := parseMetadata(plaintext[:metaLen])
+		if err != nil {
+			return info
+		}
+
+		info.FileName = originalName
+		info.Extension = ext
+		info.Status = "OK"
+	} else {
+		// Chunked: only need to decrypt metadata
+		metaChunkSize := int(header.MetaLen) + magic.GCMTagSize
+		metaChunkBuf := make([]byte, metaChunkSize)
+		if _, err := io.ReadFull(f, metaChunkBuf); err != nil {
+			return info
+		}
+
+		metaPlain, err := security.DecryptChunk(metaChunkBuf, key, header.Nonce, headerBytes, 0)
+		if err != nil {
+			if !security.VerifyKeyCheck(key, header.KeyCheck) {
+				info.Status = "INCORRECT KEY/PASSWORD"
+			}
+			return info
+		}
+
+		originalName, ext, err := parseMetadata(metaPlain)
+		if err != nil {
+			return info
+		}
+
+		info.FileName = originalName
+		info.Extension = ext
+		info.Status = "OK"
 	}
 
-	// Parse metadata
-	metaLen := int(header.MetaLen)
-	if len(plaintext) < metaLen {
-		return info
-	}
-
-	originalName, ext, err := parseMetadata(plaintext[:metaLen])
-	if err != nil {
-		return info
-	}
-
-	info.FileName = originalName
-	info.Extension = ext
-	info.Status = "OK"
 	return info
 }

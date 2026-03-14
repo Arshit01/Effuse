@@ -50,6 +50,7 @@ Effuse - AES-256-GCM File Encryption Utility
 var (
 	keyFile string
 	outName string
+	destDir string
 	askOut  bool
 	
 	// Root Command
@@ -87,7 +88,8 @@ func init() {
 
 	// Global persistent flags
 	rootCmd.PersistentFlags().StringVar(&keyFile, "key", "", "Use PEM key file")
-	rootCmd.PersistentFlags().StringVarP(&outName, "output", "o", "", "Output file name")
+	rootCmd.PersistentFlags().StringVarP(&outName, "output", "o", "", "Output file name (e.g. file.txt)")
+	rootCmd.PersistentFlags().StringVarP(&destDir, "dest", "d", "", "Destination directory (e.g. C:\\Folder)")
 	rootCmd.PersistentFlags().BoolVar(&askOut, "out", false, "Prompt for output name for each file")
 
 	// Hide the default help flag to focus on the 'help' subcommand
@@ -100,7 +102,7 @@ func init() {
 	rootCmd.AddCommand(infoCmd)
 	rootCmd.AddCommand(genKeyCmd)
 
-	// Root Solution: Replace the default help footer with our preferred subcommand style
+	// Replace the default help footer with subcommand style
 	rootCmd.SetUsageTemplate(strings.Replace(rootCmd.UsageTemplate(), "[command] --help", "help [command]", 1))
 }
 
@@ -189,11 +191,25 @@ func processFiles(files []string, mode string) {
 		return
 	}
 
-	// Check for file existence first
+	// Expand glob patterns
+	var expanded []string
+	for _, pattern := range files {
+		matches, err := filepath.Glob(pattern)
+		if err != nil || len(matches) == 0 {
+			expanded = append(expanded, pattern)
+		} else {
+			expanded = append(expanded, matches...)
+		}
+	}
+
+	// Check for file existence
 	var existingFiles []string
-	for _, file := range files {
-		if _, err := os.Stat(file); err == nil {
+	for _, file := range expanded {
+		info, err := os.Stat(file)
+		if err == nil && !info.IsDir() {
 			existingFiles = append(existingFiles, file)
+		} else if err == nil && info.IsDir() {
+			pterm.Warning.Printf("'%s' is a directory. Skipping.\n", file)
 		} else {
 			pterm.Warning.Printf("File not found '%s'. Skipping.\n", file)
 		}
@@ -239,13 +255,13 @@ func processFiles(files []string, mode string) {
 	// Info mode: collect results and display table
 	if mode == "info" {
 		tableData := pterm.TableData{
-			{"File", "File Name", "Extension", "Version", "Status"},
+			{"File", "File Name", "Extension", "Original Size", "Version", "Status"},
 		}
 
 		for _, file := range existingFiles {
 			info := actions.GetFileInfo(file, passwordOrKey, usePEM)
 			tableData = append(tableData, []string{
-				info.File, info.FileName, info.Extension, info.Version, info.Status,
+				info.File, info.FileName, info.Extension, info.OriginalSize, info.Version, info.Status,
 			})
 		}
 
@@ -273,9 +289,9 @@ func processFiles(files []string, mode string) {
 
 		switch mode {
 		case "encrypt":
-			err = actions.EncryptFile(file, passwordOrKey, usePEM, currentOutPath)
+			err = actions.EncryptFile(file, passwordOrKey, usePEM, destDir, currentOutPath)
 		case "decrypt":
-			err = actions.DecryptFile(file, passwordOrKey, usePEM, currentOutPath)
+			err = actions.DecryptFile(file, passwordOrKey, usePEM, destDir, currentOutPath)
 		}
 		if err != nil {
 			// Only print errors not already displayed by the spinner

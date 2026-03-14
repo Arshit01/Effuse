@@ -50,7 +50,7 @@ func parseMetadata(meta []byte) (filename, ext string, err error) {
 }
 
 // Decrypt the .eff files.
-func DecryptFile(path string, passwordOrKey []byte, usePEM bool, customOutPath string) error {
+func DecryptFile(path string, passwordOrKey []byte, usePEM bool, destDir, customOutPath string) error {
 	f, err := os.Open(path)
 	if err != nil {
 		pterm.Error.Printf("Failed to open file %s: %v\n", filepath.Base(path), err)
@@ -58,24 +58,14 @@ func DecryptFile(path string, passwordOrKey []byte, usePEM bool, customOutPath s
 	}
 	defer f.Close()
 
-	// Read Header (also returns raw bytes for AAD)
-	// ReadHeader verifies magic, version, and header hash.
+	// Read Header
 	header, headerBytes, err := magic.ReadHeader(f)
 	if err != nil {
 		pterm.Error.Println(err.Error())
 		return &DisplayedError{err}
 	}
 
-	// Read remaining ciphertext
-	ciphertext, err := io.ReadAll(f)
-	if err != nil {
-		pterm.Error.Println("File has been tampered")
-		return &DisplayedError{err}
-	}
-
-	spinner, _ := pterm.DefaultSpinner.Start(fmt.Sprintf("Decrypting %s...", filepath.Base(path)))
-
-	// Derive and parse Key/Password
+	// Derive key
 	var key []byte
 	if usePEM {
 		key = passwordOrKey
@@ -83,58 +73,139 @@ func DecryptFile(path string, passwordOrKey []byte, usePEM bool, customOutPath s
 		key = security.DeriveKey(string(passwordOrKey), header.Salt, int(header.Iterations))
 	}
 
-	// Decrypt and verify integrity using GCM with header as AAD.
-	plaintext, err := security.Decrypt(ciphertext, key, header.Nonce, headerBytes)
-	if err != nil {
-		// GCM failed — use HMAC key check to determine cause:
-		if security.VerifyKeyCheck(key, header.KeyCheck) {
-			spinner.Fail("File has been tampered") // If HMAC passes → key is correct, but ciphertext was tampered
-			return &DisplayedError{security.ErrTampered}
+	// Resolve output path
+	var originalName, ext string
+	var outFile *os.File
+
+	if header.ChunkSize == 0 {
+		spinner, _ := pterm.DefaultSpinner.Start(fmt.Sprintf("Decrypting %s...", filepath.Base(path)))
+
+		// Read remaining ciphertext
+		ciphertext, err := io.ReadAll(f)
+		if err != nil {
+			spinner.Fail("File has been tampered")
+			return &DisplayedError{err}
 		}
-		spinner.Fail("Incorrect password or key") // If HMAC fails → key is wrong
-		return &DisplayedError{security.ErrIncorrectKey}
-	}
 
-	// Split plaintext into metadata and file data using MetaLen from header
-	metaLen := int(header.MetaLen)
-	if len(plaintext) < metaLen {
-		spinner.Fail("Decryption failed")
-		return &DisplayedError{fmt.Errorf("decrypted payload too small for metadata")}
-	}
-
-	metaBytes := plaintext[:metaLen]
-	fileData := plaintext[metaLen:]
-
-	// Parse metadata to get original filename and extension
-	originalName, ext, err := parseMetadata(metaBytes)
-	if err != nil {
-		spinner.Fail("Decryption failed")
-		return &DisplayedError{fmt.Errorf("malformed metadata: %w", err)}
-	}
-
-	// Write Output
-	var desiredPath string
-	if customOutPath != "" {
-		desiredPath = customOutPath
-		if filepath.Ext(desiredPath) == "" {
-			desiredPath += ext
+		// Decrypt
+		plaintext, err := security.DecryptInPlace(ciphertext, key, header.Nonce, headerBytes)
+		if err != nil {
+			if security.VerifyKeyCheck(key, header.KeyCheck) {
+				spinner.Fail("File has been tampered")
+				return &DisplayedError{security.ErrTampered}
+			}
+			spinner.Fail("Incorrect password or key")
+			return &DisplayedError{security.ErrIncorrectKey}
 		}
+
+		// Extract metadata
+		metaLen := int(header.MetaLen)
+		if len(plaintext) < metaLen {
+			spinner.Fail("Decryption failed")
+			return &DisplayedError{fmt.Errorf("decrypted payload too small for metadata")}
+		}
+
+		originalName, ext, err = parseMetadata(plaintext[:metaLen])
+		if err != nil {
+			spinner.Fail("Decryption failed")
+			return &DisplayedError{fmt.Errorf("malformed metadata: %w", err)}
+		}
+		fileData := plaintext[metaLen:]
+
+		// Resolve and write output
+		newPath := ResolveOutputPath(path, destDir, customOutPath, originalName, ext)
+
+		if err := os.WriteFile(newPath, fileData, 0644); err != nil {
+			spinner.Fail("Failed to write decrypted file")
+			return &DisplayedError{err}
+		}
+
+		spinner.Success("File decrypted successfully")
+		pterm.Success.Printf("Decrypted: %s -> %s\n", path, newPath)
 	} else {
-		desiredPath = filepath.Join(filepath.Dir(path), originalName)
+		// Decrypt metadata chunk
+		metaChunkSize := int(header.MetaLen) + magic.GCMTagSize
+		metaChunkBuf := make([]byte, metaChunkSize)
+		if _, err := io.ReadFull(f, metaChunkBuf); err != nil {
+			pterm.Error.Println("File has been tampered")
+			return &DisplayedError{err}
+		}
+
+		metaPlain, err := security.DecryptChunk(metaChunkBuf, key, header.Nonce, headerBytes, 0)
+		if err != nil {
+			if security.VerifyKeyCheck(key, header.KeyCheck) {
+				pterm.Error.Println("File has been tampered")
+				return &DisplayedError{security.ErrTampered}
+			}
+			pterm.Error.Println("Incorrect password or key")
+			return &DisplayedError{security.ErrIncorrectKey}
+		}
+
+		originalName, ext, err = parseMetadata(metaPlain)
+		if err != nil {
+			pterm.Error.Println("Decryption failed")
+			return &DisplayedError{fmt.Errorf("malformed metadata: %w", err)}
+		}
+
+		// Resolve and create output file
+		newPath := ResolveOutputPath(path, destDir, customOutPath, originalName, ext)
+		outFile, err = os.Create(newPath)
+		if err != nil {
+			pterm.Error.Printf("Failed to create output file: %v\n", err)
+			return &DisplayedError{err}
+		}
+		defer outFile.Close()
+
+		// Calculate total data chunks
+		cs := int64(header.ChunkSize)
+		totalDataChunks := int((int64(header.OriginalSize) + cs - 1) / cs)
+
+		// Progress bar
+		pb, _ := pterm.DefaultProgressbar.WithTotal(totalDataChunks).WithTitle(fmt.Sprintf("Decrypting %s", filepath.Base(path))).Start()
+
+		encChunkSize := int(header.ChunkSize) + magic.GCMTagSize
+		readBuf := make([]byte, encChunkSize)
+		var chunkIdx uint32 = 1
+
+		for {
+			n, readErr := io.ReadFull(f, readBuf)
+			if n > 0 {
+				decrypted, err := security.DecryptChunk(readBuf[:n], key, header.Nonce, headerBytes, chunkIdx)
+				if err != nil {
+					pb.Stop()
+					if security.VerifyKeyCheck(key, header.KeyCheck) {
+						pterm.Error.Println("File has been tampered")
+						return &DisplayedError{security.ErrTampered}
+					}
+					pterm.Error.Println("Incorrect password or key")
+					return &DisplayedError{security.ErrIncorrectKey}
+				}
+
+				if _, err := outFile.Write(decrypted); err != nil {
+					pb.Stop()
+					pterm.Error.Println("Failed to write decrypted data")
+					return &DisplayedError{err}
+				}
+				chunkIdx++
+				pb.Increment()
+			}
+
+			if readErr != nil {
+				if readErr == io.EOF || readErr == io.ErrUnexpectedEOF {
+					break
+				}
+				pb.Stop()
+				pterm.Error.Println("Failed to read file")
+				return &DisplayedError{readErr}
+			}
+		}
+
+		pb.Stop()
+		pterm.Success.Println("File decrypted successfully")
+		pterm.Success.Printf("Decrypted: %s -> %s\n", path, newPath)
 	}
 
-	newPath := generateSafePath(desiredPath)
-
-	if err := os.WriteFile(newPath, fileData, 0644); err != nil {
-		spinner.Fail("Failed to write decrypted file")
-		return &DisplayedError{err}
-	}
-
-	spinner.Success("File decrypted successfully")
-
-	pterm.Success.Printf("Decrypted: %s -> %s\n", path, newPath)
 	f.Close()
-	
 	if err := os.Remove(path); err != nil {
 		pterm.Warning.Printf("Could not remove encrypted file: %v\n", err)
 	} else {
@@ -142,3 +213,4 @@ func DecryptFile(path string, passwordOrKey []byte, usePEM bool, customOutPath s
 	}
 	return nil
 }
+

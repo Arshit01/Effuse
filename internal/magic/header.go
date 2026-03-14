@@ -31,6 +31,10 @@ const (
 	NonceLen       = 12
 	KeyCheckLen    = 32
 	HeaderHashLen  = 32
+	GCMTagSize     = 16
+
+	DefaultChunkSize = 128 * 1024 * 1024
+	SingleShotLimit  = 256 * 1024 * 1024
 )
 
 var (
@@ -41,15 +45,17 @@ var (
 )
 
 type Header struct {
-	Iterations uint32
-	Salt       []byte
-	Nonce      []byte
-	KeyCheck   []byte
-	MetaLen    uint32
+	Iterations   uint32
+	Salt         []byte
+	Nonce        []byte
+	KeyCheck     []byte
+	MetaLen      uint32
+	OriginalSize uint64
+	ChunkSize    uint32
 }
 
-// Format: MAGIC(6) | VERSION(2) | ITER(4) | SALT_LEN(1) | SALT(var) | NONCE(12) | KEY_CHECK(32) | META_LEN(4) | HEADER_HASH(32)
-func WriteHeader(w io.Writer, iterations uint32, salt, nonce, keyCheck []byte, metaLen uint32) ([]byte, error) {
+// Format: MAGIC(6) | VERSION(2) | ITER(4) | SALT_LEN(1) | SALT(var) | NONCE(12) | KEY_CHECK(32) | META_LEN(4) | ORIGINAL_SIZE(8) | CHUNK_SIZE(4) | HEADER_HASH(32)
+func WriteHeader(w io.Writer, iterations uint32, salt, nonce, keyCheck []byte, metaLen uint32, originalSize uint64, chunkSize uint32) ([]byte, error) {
 	var buf bytes.Buffer
 
 	// Magic and Version
@@ -81,6 +87,12 @@ func WriteHeader(w io.Writer, iterations uint32, salt, nonce, keyCheck []byte, m
 
 	// Metadata Length
 	binary.Write(&buf, binary.BigEndian, metaLen)
+
+	// Original file size
+	binary.Write(&buf, binary.BigEndian, originalSize)
+
+	// Chunk size
+	binary.Write(&buf, binary.BigEndian, chunkSize)
 
 	// Compute SHA256 hash of all preceding header bytes
 	hash := sha256.Sum256(buf.Bytes())
@@ -153,6 +165,18 @@ func ReadHeader(r io.Reader) (*Header, []byte, error) {
 		return nil, nil, ErrShortRead
 	}
 
+	// Original Size
+	var originalSize uint64
+	if err := binary.Read(tee, binary.BigEndian, &originalSize); err != nil {
+		return nil, nil, ErrShortRead
+	}
+
+	// Chunk Size
+	var chunkSize uint32
+	if err := binary.Read(tee, binary.BigEndian, &chunkSize); err != nil {
+		return nil, nil, ErrShortRead
+	}
+
 	// Bytes before the hash
 	preHashBytes := make([]byte, raw.Len())
 	copy(preHashBytes, raw.Bytes())
@@ -170,10 +194,12 @@ func ReadHeader(r io.Reader) (*Header, []byte, error) {
 	}
 
 	return &Header{
-		Iterations: iterations,
-		Salt:       salt,
-		Nonce:      nonce,
-		KeyCheck:   keyCheck,
-		MetaLen:    metaLen,
+		Iterations:   iterations,
+		Salt:         salt,
+		Nonce:        nonce,
+		KeyCheck:     keyCheck,
+		MetaLen:      metaLen,
+		OriginalSize: originalSize,
+		ChunkSize:    chunkSize,
 	}, raw.Bytes(), nil
 }

@@ -35,3 +35,51 @@ func generateSafePath(desiredPath string) string {
 	timestamp := time.Now().Format("20060102-150405")
 	return fmt.Sprintf("%s-%s%s", base, timestamp, ext)
 }
+
+func ResolveOutputPath(srcPath, destDir, customFileName, originalName, finalExt string) string {
+	var outDir string
+
+	// Determine Output Directory
+	if destDir != "" {
+		// Strip trailing quotes
+		destDir = strings.TrimSuffix(destDir, "\"")
+		outDir = destDir
+		// Ensure the custom directory exists
+		os.MkdirAll(outDir, 0755)
+	} else {
+		// Default to source file's directory
+		outDir = filepath.Dir(srcPath)
+	}
+
+	// Determine File Name
+	var outName string
+	if customFileName != "" {
+		// Strip any trailing quotes
+		outName = strings.TrimSuffix(customFileName, "\"")
+	} else if originalName != "" {
+		outName = originalName
+	} else {
+		outName = filepath.Base(srcPath)
+		// Strip the original extension
+		if finalExt == ".eff" {
+			outName = strings.TrimSuffix(outName, filepath.Ext(outName))
+		}
+	}
+
+	// Combine Directory and File Name
+	desiredPath := filepath.Join(outDir, outName)
+
+	// Force .eff Extension
+	if finalExt == ".eff" {
+		if !strings.HasSuffix(desiredPath, finalExt) {
+			desiredPath += finalExt
+		}
+	} else if finalExt != "" {
+		// Only append the MIME fallback extension if there is no extension
+		if filepath.Ext(desiredPath) == "" {
+			desiredPath += finalExt
+		}
+	}
+
+	return generateSafePath(desiredPath)
+}

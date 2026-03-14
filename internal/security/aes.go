@@ -19,6 +19,7 @@ package security
 import (
 	"crypto/aes"
 	"crypto/cipher"
+	"encoding/binary"
 	"errors"
 	"fmt"
 )
@@ -64,4 +65,76 @@ func Decrypt(ciphertext, key, nonce, aad []byte) ([]byte, error) {
 	}
 
 	return plaintext, nil
+}
+
+// Encrypts plaintext in-place using AES-256-GCM (one shot).
+func EncryptInPlace(buf []byte, ptLen int, key, nonce, aad []byte) ([]byte, error) {
+	block, err := aes.NewCipher(key)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create cipher: %w", err)
+	}
+
+	gcm, err := cipher.NewGCM(block)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create GCM: %w", err)
+	}
+
+	plaintext := buf[:ptLen]
+	ciphertext := gcm.Seal(plaintext[:0], nonce, plaintext, aad)
+	return ciphertext, nil
+}
+
+// Decrypts ciphertext in-place using AES-256-GCM (one shot).
+func DecryptInPlace(ciphertext, key, nonce, aad []byte) ([]byte, error) {
+	block, err := aes.NewCipher(key)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create cipher: %w", err)
+	}
+
+	gcm, err := cipher.NewGCM(block)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create GCM: %w", err)
+	}
+
+	plaintext, err := gcm.Open(ciphertext[:0], nonce, ciphertext, aad)
+	if err != nil {
+		return nil, ErrTampered
+	}
+
+	return plaintext, nil
+}
+
+// Produce a unique nonce per chunk.
+func deriveChunkNonce(baseNonce []byte, chunkIdx uint32) []byte {
+	nonce := make([]byte, len(baseNonce))
+	copy(nonce, baseNonce)
+	// XOR chunk index into the last 4 bytes of the nonce
+	idxBytes := make([]byte, 4)
+	binary.BigEndian.PutUint32(idxBytes, chunkIdx)
+	for i := 0; i < 4; i++ {
+		nonce[len(nonce)-4+i] ^= idxBytes[i]
+	}
+	return nonce
+}
+
+// Create AAD for a chunk
+func buildChunkAAD(headerAAD []byte, chunkIdx uint32) []byte {
+	aad := make([]byte, len(headerAAD)+4)
+	copy(aad, headerAAD)
+	binary.BigEndian.PutUint32(aad[len(headerAAD):], chunkIdx)
+	return aad
+}
+
+// Encrypts a chunk with derived nonce and chunk-specific AAD.
+func EncryptChunk(plaintext, key, baseNonce, headerAAD []byte, chunkIdx uint32) ([]byte, error) {
+	nonce := deriveChunkNonce(baseNonce, chunkIdx)
+	aad := buildChunkAAD(headerAAD, chunkIdx)
+	return Encrypt(plaintext, key, nonce, aad)
+}
+
+// Decrypts a chunk with derived nonce and chunk-specific AAD.
+func DecryptChunk(ciphertext, key, baseNonce, headerAAD []byte, chunkIdx uint32) ([]byte, error) {
+	nonce := deriveChunkNonce(baseNonce, chunkIdx)
+	aad := buildChunkAAD(headerAAD, chunkIdx)
+	return Decrypt(ciphertext, key, nonce, aad)
 }
