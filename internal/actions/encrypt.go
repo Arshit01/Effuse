@@ -29,9 +29,9 @@ import (
 	"github.com/pterm/pterm"
 )
 
-// buildMetadata creates the metadata bytes: [filename_len(2)][filename][ext_len(1)][extension]
+// Creates the metadata bytes
 func buildMetadata(path string, data []byte) []byte {
-	// Original filename (basename without path)
+	// Original filename
 	filename := filepath.Base(path)
 	filenameBytes := []byte(filename)
 	if len(filenameBytes) > 65535 {
@@ -45,7 +45,6 @@ func buildMetadata(path string, data []byte) []byte {
 		extBytes = extBytes[:255]
 	}
 
-	// Build: [filename_len(2)][filename][ext_len(1)][extension]
 	meta := make([]byte, 2+len(filenameBytes)+1+len(extBytes))
 	binary.BigEndian.PutUint16(meta[0:2], uint16(len(filenameBytes)))
 	copy(meta[2:], filenameBytes)
@@ -56,7 +55,7 @@ func buildMetadata(path string, data []byte) []byte {
 }
 
 // Encrypts the file using the given password or key.
-func EncryptFile(path string, passwordOrKey []byte, usePEM bool) error {
+func EncryptFile(path string, passwordOrKey []byte, usePEM bool, customOutPath string) error {
 	// Read file
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -67,7 +66,7 @@ func EncryptFile(path string, passwordOrKey []byte, usePEM bool) error {
 	// Build metadata
 	meta := buildMetadata(path, data)
 
-	// Construct Payload: [metadata][filedata]
+	// Construct Payload: metadata and filedata
 	payload := make([]byte, len(meta)+len(data))
 	copy(payload, meta)
 	copy(payload[len(meta):], data)
@@ -96,12 +95,22 @@ func EncryptFile(path string, passwordOrKey []byte, usePEM bool) error {
 		return &DisplayedError{err}
 	}
 
-	// Generate key check (HMAC-SHA256) for key verification during decryption
+	// Generates (HMAC-SHA256) for key verification
 	keyCheck := security.GenerateKeyCheck(key)
 
-	// Write header and capture raw bytes for AAD
-	baseName := strings.TrimSuffix(path, filepath.Ext(path))
-	newPath := baseName + ".eff"
+	// Write Output
+	var desiredPath string
+	if customOutPath != "" {
+		desiredPath = customOutPath
+		if filepath.Ext(desiredPath) == "" {
+			desiredPath += ".eff"
+		}
+	} else {
+		baseName := strings.TrimSuffix(path, filepath.Ext(path))
+		desiredPath = baseName + ".eff"
+	}
+	
+	newPath := generateSafePath(desiredPath)
 
 	outFile, err := os.Create(newPath)
 	if err != nil {

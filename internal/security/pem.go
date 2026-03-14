@@ -34,7 +34,7 @@ import (
 	"github.com/pterm/pterm"
 )
 
-// Reads a PEM file, strips headers, and hashes the content to derive a 32-byte key.
+// Hashes the content to derive a 32-byte key.
 func GetKeyFromPEM(filename string) ([]byte, error) {
 	data, err := os.ReadFile(filename)
 	if err != nil {
@@ -72,7 +72,6 @@ type DeterministicReader struct {
 }
 
 func NewDeterministicReader(seed []byte) (*DeterministicReader, error) {
-	// Use SHA256 to hash seed to 32 bytes
 	key := sha256.Sum256(seed)
 	
 	// Create AES cipher
@@ -81,7 +80,7 @@ func NewDeterministicReader(seed []byte) (*DeterministicReader, error) {
 		return nil, err
 	}
 	
-	// Use CTR mode with a zero IV for determinism
+	// Use CTR mode with a zero IV for deterministic key
 	iv := make([]byte, aes.BlockSize)
 	ctr := cipher.NewCTR(block, iv)
 	
@@ -96,8 +95,8 @@ func (r *DeterministicReader) Read(p []byte) (n int, err error) {
 	return len(p), nil
 }
 
-// Writes "key.pem" using the sourceFile and password for entropy.
-func GenerateDeterministicRSAKeys(sourceFile, password string) error {
+// Writes to outFile using the sourceFile and password for entropy.
+func GenerateDeterministicRSAKeys(sourceFile, password, outFile string) error {
 	f, err := os.Open(sourceFile)
 	if err != nil {
 		return err
@@ -171,11 +170,11 @@ func GenerateDeterministicRSAKeys(sourceFile, password string) error {
 	spinner.Success("Key generation completed")
 
 	// Export to PEM
-	outFile, err := os.Create("key.pem")
+	fOut, err := os.Create(outFile)
 	if err != nil {
 		return err
 	}
-	defer outFile.Close()
+	defer fOut.Close()
 
 	privBytes := x509.MarshalPKCS1PrivateKey(key)
 	pemBlock := &pem.Block{
@@ -183,11 +182,11 @@ func GenerateDeterministicRSAKeys(sourceFile, password string) error {
 		Bytes: privBytes,
 	}
 
-	if err := pem.Encode(outFile, pemBlock); err != nil {
+	if err := pem.Encode(fOut, pemBlock); err != nil {
 		return err
 	}
 	
-	pterm.Success.Println("Key exported to key.pem")
+	pterm.Success.Printf("Key exported to %s\n", outFile)
 	return nil
 }
 

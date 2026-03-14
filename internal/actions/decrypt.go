@@ -28,8 +28,7 @@ import (
 	"github.com/pterm/pterm"
 )
 
-// parseMetadata extracts filename and extension from metadata bytes.
-// Format: [filename_len(2)][filename][ext_len(1)][extension]
+// Extracts filename and extension from metadata bytes.
 func parseMetadata(meta []byte) (filename, ext string, err error) {
 	if len(meta) < 3 {
 		return "", "", fmt.Errorf("metadata too short")
@@ -51,7 +50,7 @@ func parseMetadata(meta []byte) (filename, ext string, err error) {
 }
 
 // Decrypt the .eff files.
-func DecryptFile(path string, passwordOrKey []byte, usePEM bool) error {
+func DecryptFile(path string, passwordOrKey []byte, usePEM bool, customOutPath string) error {
 	f, err := os.Open(path)
 	if err != nil {
 		pterm.Error.Printf("Failed to open file %s: %v\n", filepath.Base(path), err)
@@ -61,8 +60,6 @@ func DecryptFile(path string, passwordOrKey []byte, usePEM bool) error {
 
 	// Read Header (also returns raw bytes for AAD)
 	// ReadHeader verifies magic, version, and header hash.
-	// If any header field was tampered, it returns ErrTamperedHeader here
-	// — before any key derivation.
 	header, headerBytes, err := magic.ReadHeader(f)
 	if err != nil {
 		pterm.Error.Println(err.Error())
@@ -87,18 +84,14 @@ func DecryptFile(path string, passwordOrKey []byte, usePEM bool) error {
 	}
 
 	// Decrypt and verify integrity using GCM with header as AAD.
-	// GCM authentication covers both the ciphertext and the entire header (via AAD),
-	// so tampering the ciphertext or auth tag will be caught here.
 	plaintext, err := security.Decrypt(ciphertext, key, header.Nonce, headerBytes)
 	if err != nil {
 		// GCM failed — use HMAC key check to determine cause:
-		// If HMAC passes → key is correct, but ciphertext was tampered
-		// If HMAC fails → key is wrong
 		if security.VerifyKeyCheck(key, header.KeyCheck) {
-			spinner.Fail("File has been tampered")
+			spinner.Fail("File has been tampered") // If HMAC passes → key is correct, but ciphertext was tampered
 			return &DisplayedError{security.ErrTampered}
 		}
-		spinner.Fail("Incorrect password or key")
+		spinner.Fail("Incorrect password or key") // If HMAC fails → key is wrong
 		return &DisplayedError{security.ErrIncorrectKey}
 	}
 
@@ -119,10 +112,18 @@ func DecryptFile(path string, passwordOrKey []byte, usePEM bool) error {
 		return &DisplayedError{fmt.Errorf("malformed metadata: %w", err)}
 	}
 
-	// Write output using the original filename in the same directory
-	dir := filepath.Dir(path)
-	_ = ext // extension is embedded in the original filename
-	newPath := filepath.Join(dir, originalName)
+	// Write Output
+	var desiredPath string
+	if customOutPath != "" {
+		desiredPath = customOutPath
+		if filepath.Ext(desiredPath) == "" {
+			desiredPath += ext
+		}
+	} else {
+		desiredPath = filepath.Join(filepath.Dir(path), originalName)
+	}
+
+	newPath := generateSafePath(desiredPath)
 
 	if err := os.WriteFile(newPath, fileData, 0644); err != nil {
 		spinner.Fail("Failed to write decrypted file")

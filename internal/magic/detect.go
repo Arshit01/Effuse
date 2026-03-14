@@ -20,11 +20,8 @@ import (
 	"github.com/gabriel-vasile/mimetype"
 )
 
-// DetectFileType determines the file extension using the mimetype library.
+// File extension using the mimetype library.
 func DetectFileType(data []byte, originalFilename string) string {
-	// Use the mimetype library to detect the file type from the byte slice.
 	mtype := mimetype.Detect(data)
-	
-	// Returns the extension with a dot, e.g., ".png"
 	return mtype.Extension()
 }

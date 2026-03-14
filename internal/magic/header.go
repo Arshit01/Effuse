@@ -49,14 +49,17 @@ type Header struct {
 }
 
 // Format: MAGIC(6) | VERSION(2) | ITER(4) | SALT_LEN(1) | SALT(var) | NONCE(12) | KEY_CHECK(32) | META_LEN(4) | HEADER_HASH(32)
-// Returns the raw header bytes (used as AAD for GCM).
 func WriteHeader(w io.Writer, iterations uint32, salt, nonce, keyCheck []byte, metaLen uint32) ([]byte, error) {
 	var buf bytes.Buffer
 
+	// Magic and Version
 	buf.Write([]byte(MagicString))
 	buf.Write([]byte(VersionString))
+
+	// KDF Iterations
 	binary.Write(&buf, binary.BigEndian, iterations)
 
+	// Salt
 	saltLen := len(salt)
 	if saltLen > 255 {
 		return nil, errors.New("salt too long")
@@ -64,22 +67,26 @@ func WriteHeader(w io.Writer, iterations uint32, salt, nonce, keyCheck []byte, m
 	buf.Write([]byte{uint8(saltLen)})
 	buf.Write(salt)
 
+	// GCM Nonce
 	if len(nonce) != NonceLen {
 		return nil, errors.New("invalid nonce length")
 	}
 	buf.Write(nonce)
 
+	// Key Check (HMAC)
 	if len(keyCheck) != KeyCheckLen {
 		return nil, errors.New("invalid key check length")
 	}
 	buf.Write(keyCheck)
 
+	// Metadata Length
 	binary.Write(&buf, binary.BigEndian, metaLen)
 
 	// Compute SHA256 hash of all preceding header bytes
 	hash := sha256.Sum256(buf.Bytes())
 	buf.Write(hash[:])
 
+	// Writes header
 	headerBytes := buf.Bytes()
 	if _, err := w.Write(headerBytes); err != nil {
 		return nil, err
@@ -88,9 +95,7 @@ func WriteHeader(w io.Writer, iterations uint32, salt, nonce, keyCheck []byte, m
 	return headerBytes, nil
 }
 
-// ReadHeader parses the file header and returns both the parsed struct
-// and the raw header bytes (used as AAD for GCM verification).
-// Verifies magic, version, and header hash before returning.
+// Verifies magic, version, and header hash.
 func ReadHeader(r io.Reader) (*Header, []byte, error) {
 	var raw bytes.Buffer
 	tee := io.TeeReader(r, &raw)
@@ -148,7 +153,7 @@ func ReadHeader(r io.Reader) (*Header, []byte, error) {
 		return nil, nil, ErrShortRead
 	}
 
-	// Snapshot the bytes before the hash (everything read so far)
+	// Bytes before the hash
 	preHashBytes := make([]byte, raw.Len())
 	copy(preHashBytes, raw.Bytes())
 
@@ -158,7 +163,7 @@ func ReadHeader(r io.Reader) (*Header, []byte, error) {
 		return nil, nil, ErrShortRead
 	}
 
-	// Verify header hash: SHA256 of all bytes before the hash must match
+	// Verify header hash
 	expectedHash := sha256.Sum256(preHashBytes)
 	if !bytes.Equal(expectedHash[:], storedHash) {
 		return nil, nil, ErrTamperedHeader

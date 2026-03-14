@@ -25,17 +25,16 @@ import (
 	"github.com/Arshit01/Effuse/internal/security"
 )
 
-// FileInfo holds the result of inspecting an .eff file.
+// Inspecting an .eff file.
 type FileInfo struct {
 	File      string // .eff filename
 	FileName  string // original filename from metadata
 	Extension string // MIME-detected extension
 	Version   string // file format version
-	Status    string // "OK" or "CORRUPTED"
+	Status    string // "OK" or "CORRUPTED" or "INCORRECT KEY/PASSWORD"
 }
 
-// GetFileInfo inspects an .eff file and returns its info.
-// Performs a full status check: magic → version → header hash → key → GCM → metadata.
+// Full status check
 func GetFileInfo(path string, passwordOrKey []byte, usePEM bool) FileInfo {
 	info := FileInfo{
 		File:      filepath.Base(path),
@@ -51,13 +50,11 @@ func GetFileInfo(path string, passwordOrKey []byte, usePEM bool) FileInfo {
 	}
 	defer f.Close()
 
-	// Read and verify header (magic, version, header hash)
+	// Verify header
 	header, headerBytes, err := magic.ReadHeader(f)
 	if err != nil {
 		return info
 	}
-
-	// If we got here, magic, version, and header hash are all valid
 	info.Version = magic.VersionString
 
 	// Read ciphertext

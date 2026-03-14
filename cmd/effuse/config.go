@@ -1,4 +1,4 @@
-// Effuse - AES-256-GCM File Encryption Utility (v2.0.0)
+// Effuse - AES-256-GCM File Encryption Utility (v2)
 // Copyright (C) 2025 Arshit Vora
 //
 // This program is free software: you can redistribute it and/or modify
@@ -18,9 +18,13 @@ package main
 
 import (
 	"errors"
+	"crypto/rand"
+	"encoding/hex"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/Arshit01/Effuse/internal/actions"
 	"github.com/Arshit01/Effuse/internal/security"
@@ -45,6 +49,8 @@ Effuse - AES-256-GCM File Encryption Utility
 
 var (
 	keyFile string
+	outName string
+	askOut  bool
 	
 	// Root Command
 	rootCmd = &cobra.Command{
@@ -81,6 +87,8 @@ func init() {
 
 	// Global persistent flags
 	rootCmd.PersistentFlags().StringVar(&keyFile, "key", "", "Use PEM key file")
+	rootCmd.PersistentFlags().StringVarP(&outName, "output", "o", "", "Output file name")
+	rootCmd.PersistentFlags().BoolVar(&askOut, "out", false, "Prompt for output name for each file")
 
 	// Hide the default help flag to focus on the 'help' subcommand
 	rootCmd.PersistentFlags().BoolP("help", "h", false, "help for effuse")
@@ -156,8 +164,19 @@ func runGenKey(source string) {
 		return
 	}
 	
+	// Generate dynamic PEM key output path
+	outPath := outName
+	if outPath == "" {
+		timestamp := time.Now().Format("20060102-150405")
+		idBytes := make([]byte, 2)
+		rand.Read(idBytes)
+		outPath = fmt.Sprintf("key-%s-%s.pem", timestamp, hex.EncodeToString(idBytes))
+	} else if filepath.Ext(outPath) == "" {
+		outPath += ".pem"
+	}
+
 	// Call deterministic key generation in security package
-	if err := security.GenerateDeterministicRSAKeys(source, password); err != nil {
+	if err := security.GenerateDeterministicRSAKeys(source, password, outPath); err != nil {
 		pterm.Error.Println("Key generation failed:", err)
 	}
 }
@@ -238,13 +257,26 @@ func processFiles(files []string, mode string) {
 	// Encrypt/Decrypt mode
 	for _, file := range existingFiles {
 		var err error
-		switch mode {
-		case "encrypt":
-			err = actions.EncryptFile(file, passwordOrKey, usePEM)
-		case "decrypt":
-			err = actions.DecryptFile(file, passwordOrKey, usePEM)
+		var currentOutPath string
+
+		if mode == "encrypt" || mode == "decrypt" {
+			if askOut {
+				var promptErr error
+				currentOutPath, promptErr = pterm.DefaultInteractiveTextInput.Show(fmt.Sprintf("Enter output name for %s", filepath.Base(file)))
+				if promptErr != nil {
+					pterm.Warning.Println("Input cancelled. Using default.")
+				}
+			} else if outName != "" {
+				currentOutPath = outName
+			}
 		}
 
+		switch mode {
+		case "encrypt":
+			err = actions.EncryptFile(file, passwordOrKey, usePEM, currentOutPath)
+		case "decrypt":
+			err = actions.DecryptFile(file, passwordOrKey, usePEM, currentOutPath)
+		}
 		if err != nil {
 			// Only print errors not already displayed by the spinner
 			var displayed *actions.DisplayedError

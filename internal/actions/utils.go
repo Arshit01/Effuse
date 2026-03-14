@@ -16,10 +16,22 @@
 
 package actions
 
-// Bypasses default error which signals that the error has already been shown.
-type DisplayedError struct {
-	Err error
-}
+import (
+	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
+	"time"
+)
 
-func (e *DisplayedError) Error() string { return e.Err.Error() }
-func (e *DisplayedError) Unwrap() error { return e.Err }
+// Append timestamp to prevent overwriting.
+func generateSafePath(desiredPath string) string {
+	if _, err := os.Stat(desiredPath); os.IsNotExist(err) {
+		return desiredPath
+	}
+
+	ext := filepath.Ext(desiredPath)
+	base := strings.TrimSuffix(desiredPath, ext)
+	timestamp := time.Now().Format("20060102-150405")
+	return fmt.Sprintf("%s-%s%s", base, timestamp, ext)
+}
