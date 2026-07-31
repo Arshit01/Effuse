@@ -26,8 +26,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/Arshit01/Effuse/internal/actions"
-	"github.com/Arshit01/Effuse/internal/security"
+	"github.com/Arshit01/Effuse/v2/internal/actions"
+	"github.com/Arshit01/Effuse/v2/internal/security"
 	"github.com/pterm/pterm"
 	"github.com/spf13/cobra"
 )

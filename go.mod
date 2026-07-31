@@ -1,6 +1,6 @@
-module github.com/Arshit01/Effuse
+module github.com/Arshit01/Effuse/v2
 
-go 1.26.1
+go 1.26.5
 
 require (
 	github.com/gabriel-vasile/mimetype v1.4.13

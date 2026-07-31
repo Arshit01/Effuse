@@ -22,8 +22,8 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/Arshit01/Effuse/internal/magic"
-	"github.com/Arshit01/Effuse/internal/security"
+	"github.com/Arshit01/Effuse/v2/internal/magic"
+	"github.com/Arshit01/Effuse/v2/internal/security"
 )
 
 // Inspecting an .eff file.
